@@ -25,8 +25,8 @@ def getdata():
     for item in items:
         ec2type = item['ec2type']
         maxrundays = item['maxrundays']
-        print(f"EC2 Type: {ec2type}, Max Run Days: {maxrundays}")
-        print(type(maxrundays))
+#        print(f"EC2 Type: {ec2type}, Max Run Days: {maxrundays}")
+#        print(type(maxrundays))
         response1 = getec2list(ec2type,maxrundays)
         print(response1)
     
@@ -43,8 +43,15 @@ def getec2list(ec2type,maxrundays):
         {
             'Name': 'instance-type',
             'Values': [ec2type] 
+        },
+        {
+            'Name': 'instance-state-name', 
+            'Values': ['running']
+            
         }
     ])['Reservations']
+    
+    
 
     # Calculate the cutoff time (1 day ago)
     UTC = timezone(timedelta(hours=+0))
@@ -55,21 +62,18 @@ def getec2list(ec2type,maxrundays):
     # Iterate over instances and print name and private IP if start time is greater than cutoff
     for reservation in instances:
         for instance in reservation['Instances']:
-            if reservation['Instances'][0]['State']['Name'] == 'running':
-                isprod = 0
-                for tag in instance['Tags']:
-                    if tag['Key'] == 'prod':
-                        tagvalue = tag['Value']
-                        if tagvalue == 1:
-                            isprod =1
-                if isprod != 1:
-                    launch_time = instance['LaunchTime']
-                    if launch_time < cutoff_time:
-                        instance_name = instance.get('PrivateDnsName', 'No Name')
-                        private_ip = instance['PrivateIpAddress']
-                        #print(f"Instance Name: {instance_name}, Private IP: {private_ip}")
-                        notifymsg = "%s Instance Name: %s Private IP:%s \n" %(notifymsg,instance_name,private_ip)
-                                
+            isprod = 0
+            tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+            if tags.get('prod') == '1':
+                isprod = 1
+            if isprod != 1:
+                launch_time = instance['LaunchTime']
+                if launch_time < cutoff_time:
+                    instance_name = instance.get('PrivateDnsName', 'No Name')
+                    private_ip = instance['PrivateIpAddress']
+                    #print(f"Instance Name: {instance_name}, Private IP: {private_ip}")
+                    notifymsg = "%s Instance Name: %s Private IP:%s \n" %(notifymsg,instance_name,private_ip)
+                        
 #    snsclient =session.client('sns')
 #    snsArn = mysns
 #    snsmsg = "You have ec2 Running for longer than expected duration \n %s" %(notifymsg)
