@@ -48,8 +48,8 @@ Resources:
   MyCustomResourceLambdaFunction:
     Type: 'AWS::Lambda::Function'
     Properties:
-      Runtime: python3.11
-      Handler: index.lambda_handler
+      Runtime: nodejs16.x
+      Handler: index.handler
       Role: !GetAtt MyLambdaExecutionRole.Arn
       Environment:
         Variables:
@@ -58,77 +58,53 @@ Resources:
           maxrundays: !Ref AlertRunDays
       Code: 
         ZipFile: |
-          import boto3
-          import os
-          import urllib3
-          import json
-          from botocore.vendored import requests
+          var response = require('cfn-response');
+          var AWS = require("aws-sdk");
+
+          // Create a new DynamoDB instance
 
 
-          SUCCESS = "SUCCESS"
-          FAILED = "FAILED"
+          exports.handler = function(event, context) {
+            AWS.config.update({region: "cn-northwest-1"})
+            var dynamoDB = new AWS.DynamoDB({ apiVersion: "2012-08-10" });
 
-          def cfnsend(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False):
-              responseUrl = event['ResponseURL']
+                // Fetch environment variables
+                const { tableName, ec2type, maxrundays } = process.env;
+                
+                // Create an item to be inserted into the DynamoDB table
+                var params = {
+                    TableName: tableName,
+                    Item: {
+                        ec2type: { S: ec2type },
+                        maxrundays:{ N: maxrundays},
+                    },
+                };
+                
+                // Insert the item into the DynamoDB table
+                dynamoDB.putItem(params,function (err, data) {
+                  if (err) {
+                    console.log("Error", err);
+                    var responseData = {Value:  'Item inserted error.'};
+                    response.send(event, context, response.FAILED, responseData);
 
-              print(responseUrl)
+                  } else {
+                    console.log("Success", data);
+                    var responseData = {Value:  'Item inserted successfully.'};
+                    response.send(event, context, response.SUCCESS, responseData);
+                          
 
-              responseBody = {}
-              responseBody['Status'] = responseStatus
-              responseBody['Reason'] = 'See the details in CloudWatch Log Stream: ' + context.log_stream_name
-              responseBody['PhysicalResourceId'] = physicalResourceId or context.log_stream_name
-              responseBody['StackId'] = event['StackId']
-              responseBody['RequestId'] = event['RequestId']
-              responseBody['LogicalResourceId'] = event['LogicalResourceId']
-              responseBody['NoEcho'] = noEcho
-              responseBody['Data'] = responseData
-
-              json_responseBody = json.dumps(responseBody)
-
-              print("Response body:\n" + json_responseBody)
-
-              headers = {
-                  'content-type' : '',
-                  'content-length' : str(len(json_responseBody))
-              }
-
-              try:
-                  response = requests.put(responseUrl,
-                                          data=json_responseBody,
-                                          headers=headers)
-                  print("Status code: " + response.reason)
-              except Exception as e:
-                  print("send(..) failed executing requests.put(..): " + str(e))
+                  }
+                });
 
 
-          def lambda_handler(event, context):
-              # Initialize DynamoDB client
-              dynamodb = boto3.resource('dynamodb')
-              
-              # Extract table name and items from event
-              table_name = os.environ.get('tableName')
-              ec2type = os.environ.get('ec2type')
-              maxrundays = os.environ.get('maxrundays')
+                // Return success response
+                return {
+                    statusCode: 200,
+                    body: JSON.stringify({ message: 'Item inserted successfully.' })
 
-              item = {
-                "ec2type": ec2type,
-                "maxrundays": int(maxrundays)
-              }
-              
-              # Get a reference to the DynamoDB table
-              table = dynamodb.Table(table_name)
-              # Insert item into the DynamoDB table
-              table.put_item(Item=item)
-
-              responseData = {}
-              responseData['Data'] = 'Items inserted successfully into {table_name}.'
-              cfnsend(event, context, SUCCESS, responseData, "CustomResourcePhysicalID")
-
-
-              return {
-                  'statusCode': 200,
-                  'body': f'Items inserted successfully into {table_name}.'
-              }
+                };
+           
+          };
 
       Timeout: 30
   InvokeInitDBLambdaOnce:
@@ -143,4 +119,3 @@ Outputs:
   DynamoDBTableName:
     Value: !Ref MyDynamoDBTable
     Description: Name of the created DynamoDB table
-
