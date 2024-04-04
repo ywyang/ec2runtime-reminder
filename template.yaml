@@ -12,6 +12,9 @@ Parameters:
   AlertRunDays:
     Type: String
     Description: Max Run Days
+  SubscriptionMail:
+    Type: String
+    Description: Max Run Days
 
 Resources:
   MyDynamoDBTable:
@@ -45,6 +48,7 @@ Resources:
         - 'arn:aws-cn:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
         - 'arn:aws-cn:iam::aws:policy/AmazonDynamoDBFullAccess'
         - 'arn:aws-cn:iam::aws:policy/AmazonSNSFullAccess'
+        - 'arn:aws-cn:iam::aws:policy/AmazonEC2ReadOnlyAccess'
   MyCustomResourceLambdaFunction:
     Type: 'AWS::Lambda::Function'
     Properties:
@@ -113,9 +117,128 @@ Resources:
     Version: "1.0"
     Properties:
       ServiceToken: !GetAtt MyCustomResourceLambdaFunction.Arn
-      Payload: {'runonce':'1'}
-      FunctionName: randomerror
+  MySNSTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      DisplayName: "MyEC2 Notify"
+  MySubscription:
+    Type: "AWS::SNS::Subscription"
+    Properties:
+      Protocol: "email"
+      Endpoint: !Ref SubscriptionMail
+      TopicArn: !Ref MySNSTopic
+  MyEC2NotifyLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Runtime: python3.11
+      Handler: index.lambda_handler
+      Role: !GetAtt MyLambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          snsTopicArn: !GetAtt MySNSTopic.Arn
+          tableName: !Ref TableName
+      Code: 
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          from datetime import datetime, timedelta, timezone
+
+          def getdata():
+              
+              # Create a DynamoDB resource
+              dynamodb = boto3.resource('dynamodb')
+
+              # Specify the table name
+              table_name = os.environ.get('tableName')
+              table = dynamodb.Table(table_name)
+
+              # Scan the table to retrieve all items
+              response = table.scan()
+              items = response['Items']
+
+              # If there are more items to retrieve, continue scanning
+              while 'LastEvaluatedKey' in response:
+                  response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+                  items.extend(response['Items'])
+
+              # Process the retrieved items
+              notifymsg = ''
+              for item in items:
+                  ec2type = item['ec2type']
+                  maxrundays = item['maxrundays']
+                  response1 = getec2list(ec2type,maxrundays)
+                  print(response1)
+                  notifymsg = notifymsg + response1
+              mysns = os.environ.get('snsTopicArn')
+              session = boto3.Session(region_name='cn-northwest-1')
+              snsclient =session.client('sns')
+              snsArn = mysns
+              snsmsg = "You have ec2 Running for longer than expected duration \n %s" %(notifymsg)
+              response = snsclient.publish(TopicArn=snsArn,Message=snsmsg,Subject='EC2 Running Outtime Warnning')
+                        
+
+          def getec2list(ec2type,maxrundays):
+                            
+              session = boto3.Session(region_name='cn-northwest-1')
+              ec2 = session.client('ec2')
+              notifymsg = ""
+              # Filter instances by instance type
+              instances = ec2.describe_instances(Filters=[
+                  {
+                      'Name': 'instance-type',
+                      'Values': [ec2type] 
+                  },
+                  {
+                      'Name': 'instance-state-name', 
+                      'Values': ['running']
+                      
+                  }
+              ])['Reservations']
+              
+              
+
+              # Calculate the cutoff time (1 day ago)
+              UTC = timezone(timedelta(hours=+0))
+              #cutoff_time = datetime.now(UTC) - timedelta(days=1)
+              cutoff_time = datetime.now(UTC) - timedelta(minutes=int(maxrundays))
+
+              
+              # Iterate over instances and print name and private IP if start time is greater than cutoff
+              for reservation in instances:
+                  for instance in reservation['Instances']:
+                      isprod = 0
+                      tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+                      if tags.get('prod') == '1':
+                          isprod = 1
+                      if isprod != 1:
+                          launch_time = instance['LaunchTime']
+                          if launch_time < cutoff_time:
+                              instance_name = instance.get('PrivateDnsName', 'No Name')
+                              private_ip = instance['PrivateIpAddress']
+                              #print(f"Instance Name: {instance_name}, Private IP: {private_ip}")
+                              notifymsg = "%sInstance Name: %s Private IP:%s \n" %(notifymsg,instance_name,private_ip)
+                                  
+              
+              return notifymsg
+
+
+          def lambda_handler(event, context):
+              getdata()
+
+
+
+      Timeout: 90
+
+
 Outputs:
   DynamoDBTableName:
     Value: !Ref MyDynamoDBTable
     Description: Name of the created DynamoDB table
+  NotifySNSTopicName:
+    Value: !Ref MySNSTopic
+    Description: Name of the SNS
+  InitDDBLambda:
+    Value: !Ref MyCustomResourceLambdaFunction
+    Description: Name of the MyCustomResourceLambdaFunction
+
