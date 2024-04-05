@@ -4,17 +4,18 @@ Description: 'CloudFormation Template for DynamoDB Table'
 Parameters:
   TableName:
     Type: String
+    Default: "mytempec2type"
     AllowedPattern: "[a-zA-Z0-9_]{3,}"
     Description: Name for the DynamoDB Table Table name must be at least 3 characters long
   AlertEC2Type:
     Type: String
-    Description: Instance Type for the Alert
+    Description: Instance Type for the Alert. egg. g4dn.*  or g4dn.4xlarge
   AlertRunDays:
     Type: String
-    Description: Max Run Days
+    Description: The Number of days to trigger the alert. 
   SubscriptionMail:
     Type: String
-    Description: Max Run Days
+    Description: "Email address to subscribe to the SNS topic. Change it to your email."
 
 Resources:
   MyDynamoDBTable:
@@ -49,7 +50,7 @@ Resources:
         - 'arn:aws-cn:iam::aws:policy/AmazonDynamoDBFullAccess'
         - 'arn:aws-cn:iam::aws:policy/AmazonSNSFullAccess'
         - 'arn:aws-cn:iam::aws:policy/AmazonEC2ReadOnlyAccess'
-  MyCustomResourceLambdaFunction:
+  MyInitDDBLambdaFunction:
     Type: 'AWS::Lambda::Function'
     Properties:
       Runtime: nodejs16.x
@@ -60,6 +61,7 @@ Resources:
           tableName: !Ref TableName
           ec2type: !Ref AlertEC2Type
           maxrundays: !Ref AlertRunDays
+          region: !Ref AWS::Region
       Code: 
         ZipFile: |
           var response = require('cfn-response');
@@ -69,11 +71,12 @@ Resources:
 
 
           exports.handler = function(event, context) {
-            AWS.config.update({region: "cn-northwest-1"})
+            // Fetch environment variables
+            const { tableName, ec2type, maxrundays ,region} = process.env;
+            AWS.config.update({region: region});
             var dynamoDB = new AWS.DynamoDB({ apiVersion: "2012-08-10" });
 
-                // Fetch environment variables
-                const { tableName, ec2type, maxrundays } = process.env;
+                
                 
                 // Create an item to be inserted into the DynamoDB table
                 var params = {
@@ -113,10 +116,10 @@ Resources:
       Timeout: 30
   InvokeInitDBLambdaOnce:
     Type: AWS::CloudFormation::CustomResource
-    DependsOn: MyCustomResourceLambdaFunction
+    DependsOn: MyInitDDBLambdaFunction
     Version: "1.0"
     Properties:
-      ServiceToken: !GetAtt MyCustomResourceLambdaFunction.Arn
+      ServiceToken: !GetAtt MyInitDDBLambdaFunction.Arn
   MySNSTopic:
     Type: "AWS::SNS::Topic"
     Properties:
@@ -135,8 +138,9 @@ Resources:
       Role: !GetAtt MyLambdaExecutionRole.Arn
       Environment:
         Variables:
-          snsTopicArn: !GetAtt MySNSTopic.Arn
+          snsTopicArn: !Ref MySNSTopic
           tableName: !Ref TableName
+          region: !Ref AWS::Region
       Code: 
         ZipFile: |
           import boto3
@@ -170,8 +174,10 @@ Resources:
                   response1 = getec2list(ec2type,maxrundays)
                   print(response1)
                   notifymsg = notifymsg + response1
+              if len(notifymsg) == 0:
+                return
               mysns = os.environ.get('snsTopicArn')
-              session = boto3.Session(region_name='cn-northwest-1')
+              session = boto3.Session(region_name=os.environ.get('region'))
               snsclient =session.client('sns')
               snsArn = mysns
               snsmsg = "You have ec2 Running for longer than expected duration \n %s" %(notifymsg)
@@ -180,7 +186,7 @@ Resources:
 
           def getec2list(ec2type,maxrundays):
                             
-              session = boto3.Session(region_name='cn-northwest-1')
+              session = boto3.Session(region_name=os.environ.get('region'))
               ec2 = session.client('ec2')
               notifymsg = ""
               # Filter instances by instance type
@@ -230,7 +236,24 @@ Resources:
 
       Timeout: 90
 
-
+  LambdaRunEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: "cron(3 13 * * ? *)" # Run every day at 9:00 AM UTC
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt MyEC2NotifyLambdaFunction.Arn
+          Id: !Ref MyEC2NotifyLambdaFunction
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties: 
+      FunctionName: !Ref MyEC2NotifyLambdaFunction
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: 
+        Fn::GetAtt: 
+          - "LambdaRunEventRule"
+          - "Arn"
 Outputs:
   DynamoDBTableName:
     Value: !Ref MyDynamoDBTable
@@ -239,6 +262,9 @@ Outputs:
     Value: !Ref MySNSTopic
     Description: Name of the SNS
   InitDDBLambda:
-    Value: !Ref MyCustomResourceLambdaFunction
-    Description: Name of the MyCustomResourceLambdaFunction
+    Value: !Ref MyInitDDBLambdaFunction
+    Description: Name of the MyInitDDBLambdaFunction
+  NotifyLambda:
+    Value: !Ref MyEC2NotifyLambdaFunction
+    Description: Name of the NotifyLambdaFunction
 
