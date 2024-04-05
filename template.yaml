@@ -9,10 +9,10 @@ Parameters:
     Description: Name for the DynamoDB Table Table name must be at least 3 characters long
   AlertEC2Type:
     Type: String
-    Description: Instance Type for the Alert. egg. g4dn.*  or g4dn.4xlarge
+    Description: Instance Type for the Alert. For example. g4dn.*  or g4dn.4xlarge
   AlertRunDays:
     Type: String
-    Description: The Number of days to trigger the alert. 
+    Description: The Number of days to trigger the alert. Enter an integer value.
   SubscriptionMail:
     Type: String
     Description: "Email address to subscribe to the SNS topic. Change it to your email."
@@ -231,15 +231,12 @@ Resources:
 
           def lambda_handler(event, context):
               getdata()
-
-
-
       Timeout: 90
 
   LambdaRunEventRule:
     Type: AWS::Events::Rule
     Properties:
-      ScheduleExpression: "cron(3 13 * * ? *)" # Run every day at 9:00 AM UTC
+      ScheduleExpression: "cron(0 1 * * ? *)" # Run every day at 9:00 AM UTC
       State: ENABLED
       Targets:
         - Arn: !GetAtt MyEC2NotifyLambdaFunction.Arn
@@ -267,4 +264,3 @@ Outputs:
   NotifyLambda:
     Value: !Ref MyEC2NotifyLambdaFunction
     Description: Name of the NotifyLambdaFunction
-
